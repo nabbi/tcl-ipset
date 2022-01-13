@@ -11,7 +11,11 @@ set debug 0
 set trace 0
 
 set path [file dirname [file normalize [info script]]]
-source $path/config.tcl
+if { [catch { source $path/config.tcl }] } {
+    puts "config.tcl does not exist, please create it from config.tcl.example"
+    exit 1
+}
+
 
 # run our url fetch with curl
 proc curl {url} {
