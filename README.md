@@ -21,5 +21,9 @@ iptables -A DENYLIST -p ALL -m set --match-set denylist-net dst -j DROP-DENYLIST
 
 iptables -I INPUT 1 -i $wan -j DENYLIST
 iptables -I OUTPUT 1 -o $wan -j DENYLIST
+```
 
+## crontab
+```
+0 1 * * *       root    /usr/local/sbin/ipset-denylists/ipset-denylists-update.tcl >  /var/log/ipset-denylist.log 2>&1
 ```
