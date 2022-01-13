@@ -39,26 +39,26 @@ proc curl {url} {
 # populates ip set
 proc ipset {setname type values} {
 
-	# normally this temp set should not exist
-	try {
-		exec ipset destroy temp
-	} trap {} {result options} {
-		#if {$trace} { puts "# temp $result" }
-	}
+    # normally this temp set should not exist
+    try {
+        exec ipset destroy temp
+    } trap {} {result options} {
+        #if {$trace} { puts "# temp $result" }
+    }
 
-	exec ipset create temp $type
+    exec ipset create temp $type
 
-	foreach v $values {
-		try {
-			exec ipset add temp $v
-		} trap {} {result options} {
-			puts "# $v $result"
-			continue
-		}
-	}
+    foreach v $values {
+        try {
+            exec ipset add temp $v
+        } trap {} {result options} {
+            puts "# $v $result"
+            continue
+        }
+    }
 
-	exec ipset swap temp $setname
-	exec ipset destroy temp
+    exec ipset swap temp $setname
+    exec ipset destroy temp
 
 }
 
@@ -78,24 +78,24 @@ set hashnet {}
 # split inputs into ip vs net lists as ipset hashes these differently
 foreach r [split $results "\n"] {
 
-	# ignore comments and empty lines
-	if { [string index $r 0] == "#" || [string length $r] == 0 } {
-    	if {$debug} { puts "# ignore line $r" }
-		continue
-	}
-
-	# ignore lines which do not validate the tcllib ip package
-    # I find that this does not perform detailed validations so I pair with additional regex checks
-    if {! [ip::is 4 $r] } {
-    	if {$debug} { puts "# invalid ipv4 $r" }
+    # ignore comments and empty lines
+    if { [string index $r 0] == "#" || [string length $r] == 0 } {
+        if {$debug} { puts "# ignore line $r" }
         continue
     }
 
-	# ignore entry if it's on our exclusion list
-	if { [lsearch $exclude $r] >= 0 } {
-		if {$debug} { puts "# excluding $r" }
-		continue
-	}
+    # ignore lines which do not validate the tcllib ip package
+    # I find that this does not perform detailed validations so I pair with additional regex checks
+    if {! [ip::is 4 $r] } {
+        if {$debug} { puts "# invalid ipv4 $r" }
+        continue
+    }
+
+    # ignore entry if it's on our exclusion list
+    if { [lsearch $exclude $r] >= 0 } {
+        if {$debug} { puts "# excluding $r" }
+        continue
+    }
 
     # see if we have a netmask included
     if { [regexp {^\d+\.\d+\.\d+\.\d+/\d+$} $r] } {
@@ -115,7 +115,7 @@ foreach r [split $results "\n"] {
             lappend hashnet $ip/$mask
             continue
         } else {
-    	    if {$debug} { puts "# invalid netmask $r" }
+            if {$debug} { puts "# invalid netmask $r" }
             continue
         }
 
@@ -127,10 +127,10 @@ foreach r [split $results "\n"] {
 
     # ignore any non-conforming lines
     } else {
-    	if {$debug} { puts "# ignore line $r" }
+        if {$debug} { puts "# ignore line $r" }
         continue
     }
-	
+
 }
 
 # de-duplicate our sources
