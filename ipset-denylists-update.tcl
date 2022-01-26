@@ -44,8 +44,10 @@ proc curl {url} {
 proc ipset {setname type values} {
 
     # normally this temp set should not exist
+    # and the real one should unless this is our first time running
     try {
         exec ipset destroy temp
+        exec ipset -q create $setname $type
     } trap {} {result options} {
         #if {$trace} { puts "# temp $result" }
     }
