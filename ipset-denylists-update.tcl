@@ -16,14 +16,13 @@ if { [catch { source $path/config.tcl }] } {
     exit 1
 }
 
-
 # run our url fetch with curl
 proc curl {url} {
     #ca; force the tls validation against our own PKI, this adds a retry fetch condition and confirms that the traffic is inspected
     #max-time; prevent sites (ie www.accuweather.com) from hanging connection open caveat is exit code 28
     #location; follows redirects to initiate new tls connection if domain name changes
     try {
-        set results [exec /usr/bin/curl --fail --silent --show-error --location --max-time 15 --capath /usr/local/share/ca-certificates/ "${url}"]
+        set results [exec curl --fail --silent --show-error --location --max-time 15 --capath /usr/local/share/ca-certificates/ "${url}"]
         set status 0
     } trap CHILDSTATUS {results options} {
         set status [lindex [dict get $options -errorcode] 2]
@@ -73,13 +72,32 @@ proc ipset {setname type values} {
 
 }
 
+# check for https://github.com/nabbi/route-summarization
+proc summarize {r} {
+    try {
+        set cmd [exec which aggregateCIDR.pl]
+        set status 0
+    } trap CHILDSTATUS {cmd options} {
+        set status [lindex [dict get $options -errorcode] 2]
+    }
+
+    if { $status } {
+        return $r
+    } else {
+        puts "Summarizing.."
+        return [exec aggregateCIDR.pl -q << $r]
+    }
+}
 
 # url fetch each ip list
 foreach u $urls {
-    append results [curl $u]
+    append results_raw [curl $u]
     #add a tailing newline as some lists omit it on the last file line causing merge issues of the last and first elements
-    append results "\n"
+    append results_raw "\n"
 }
+
+# the also sanitizes inputs if perl script present
+set results [summarize $results_raw]
 
 #initialize empty lists to store our validated results
 set haship {}
@@ -87,6 +105,7 @@ set hashnet {}
 
 # process the combined url results
 # split inputs into ip vs net lists as ipset hashes these differently
+# TODO ipv6 support
 foreach r [split $results "\n"] {
 
     # ignore comments and empty lines
