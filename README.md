@@ -1,12 +1,32 @@
-TCL script to refresh ipset deny lists.
+## TCL IPSet
 
-Creates denylist-host and denylist-net which can be used in iptable rules
+TCL scripts for managing ipset (iptables sets)
 
-## lists
-[FireHOL](https://iplists.firehol.org/) levels 1-3
+* Intergrates with [CIDR Route Summarizaion](https://github.com/nabbi/route-summarization)
+* IPv4 and IPv6 support
+* source from url or local files
+* Exclusion of false positives
 
-## iptables
+## FireHol Deny lists
+
+* [FireHOL](https://iplists.firehol.org/) levels 1-3
+
+## Private Bogon list
+
+* [local private networks](./lists/private)
+
+## Usage
+
+```shell
+sudo ./ipset-denylists.tcl
+sudo ./ipset-private.tcl
 ```
+
+### iptables
+
+YMMV
+
+```iptables
 -N DROP-DENYLIST
 -A DROP-DENYLIST -m limit --limit 1/second --limit-burst 100 -j LOG --log-prefix "iptables[denylist]: "
 -A DROP-DENYLIST -j DROP
@@ -19,7 +39,9 @@ Creates denylist-host and denylist-net which can be used in iptable rules
 
 ```
 
-## crontab
-```
+### cron
+
+```crontab
 0 1 * * *       root    /opt/ipset-denylists/ipset-denylists-update.tcl && /etc/init.d/ipset save >  /var/log/ipset-denylist.log 2>&1
 ```
+
