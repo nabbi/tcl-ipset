@@ -8,5 +8,5 @@ set path [file dirname [file normalize [info script]]]
 
 source $path/common.tcl
 
-main "private" [import lists/private]
+main "private" [import $path/lists/private]
 

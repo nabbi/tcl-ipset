@@ -1,1 +1,3 @@
-config.tcl
+cache
+*.swp
+lists/local.*

@@ -2,7 +2,7 @@
 # the next line restarts using tclsh \
 exec tclsh "$0" "$@"
 
-## Copyright (C) 2021-2022 nic@boet.cc
+## Copyright (C) 2021-2023 nic@boet.cc
 # populate ipset from web url containing IOC to be blocked within iptable rules
 
 set path [file dirname [file normalize [info script]]]
@@ -24,5 +24,8 @@ lappend exclude "140.82.112.4"
 lappend exclude "140.82.112.3"
 lappend exclude "140.82.114.3"
 
-main "denylist" [fetch_all $urls]
+append rawlist [fetch_all $urls]
+append rawlist [import $path/lists/local.deny]
+
+main "denylist" $rawlist
 

@@ -1,5 +1,6 @@
 
 package require ip
+package require sha256
 
 if { ! [info exists debug] } { set debug 0 }
 if { ! [info exists trace] } { set trace 0 }
@@ -13,8 +14,16 @@ proc check_root {} {
     }
 }
 
-# run our url fetch with curl
+# fetch url lists using, curl with local cache checks
 proc curl {url} {
+    
+    set hash [sha2::sha256 $url]
+
+    if { [cache_valid $hash] } {
+        puts "# using recent cache file for $url"
+        return [cache_r $hash]
+    }
+
     #ca; force the tls validation against our own PKI, this adds a retry fetch condition and confirms that the traffic is inspected
     #max-time; prevent sites (ie www.accuweather.com) from hanging connection open caveat is exit code 28
     #location; follows redirects to initiate new tls connection if domain name changes
@@ -26,12 +35,12 @@ proc curl {url} {
     }
 
     if { $status } {
-        # we want to continue and skip if one of the feeds is not functional
-        # TODO this could purge out a previously successful update as there is no offline caches
-        puts "curl $status $url"
-        return
+        puts "# curl error $status $url"
+        puts "# falling back to cache file, if it exists"
+        return [cache_r $hash]
     }
 
+    cache_w $hash $results
     return -code $status $results
 }
 
@@ -43,6 +52,55 @@ proc fetch_all {urls} {
         append r "\n"
     }
     return $r
+}
+
+# write results to disk cache
+proc cache_w {hash results} {
+    global path
+
+    file mkdir $path/cache
+    set fh [open $path/cache/$hash {w}]
+
+    puts $fh "# $url"
+    puts $fh "# [clock seconds]"
+    puts $fh $results
+
+    close $fh
+}
+
+# read (attempt) results from disk cache
+proc cache_r {hash} {
+    global path
+    global debug
+
+    if { ! [file exists $path/cache/$hash] } {
+        if ($debug) { puts "# no cache file found for $url" }
+        return "# empty"
+    }
+
+    set fh [open $path/cache/$hash {r}]
+    set data [read $fh]
+    close $fh
+
+    return $data
+}
+
+# check age of cache file
+proc cache_valid {hash} {
+    global path
+    global debug
+
+    if { ! [file exists $path/cache/$hash] } {
+        if ($debug) { puts "# no cache file found for $hash" }
+        return false
+    }
+
+    if { [expr [clock seconds] - [file mtime $path/cache/$hash] > 3600] } {
+        if ($debug) { puts "# cache file state" }
+        return false
+    }
+
+    return true
 }
 
 proc import {filename} {
@@ -218,6 +276,7 @@ proc ipset_populate {setname type values family} {
 }
 
 proc main {prefix rawlist} {
+    global debug
     global trace
 
     check_root
@@ -229,7 +288,9 @@ proc main {prefix rawlist} {
     
     set sorted [process_results $summarized]
     if {$trace} { puts "# sorted: $sorted" }
-    
+
+
+    if {$debug} { puts "# ipset; creating and populating" }
     if { [llength [lindex $sorted 0]] > 0 } {
         ipset_populate "${prefix}-host" "iphash" [lindex $sorted 0] "ipv4"
     }
