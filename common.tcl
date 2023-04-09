@@ -61,7 +61,6 @@ proc cache_w {hash results} {
     file mkdir $path/cache
     set fh [open $path/cache/$hash {w}]
 
-    puts $fh "# $url"
     puts $fh "# [clock seconds]"
     puts $fh $results
 
