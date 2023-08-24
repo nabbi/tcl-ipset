@@ -23,6 +23,9 @@ lappend exclude "172.16.0.0/12"
 lappend exclude "140.82.112.4"
 lappend exclude "140.82.112.3"
 lappend exclude "140.82.114.3"
+lappend exclude "185.199.108.133"
+lappend exclude "185.199.110.133"
+lappend exclude "185.199.111.133"
 
 append rawlist [fetch_all $urls]
 append rawlist [import $path/lists/local.deny]
