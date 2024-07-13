@@ -111,6 +111,7 @@ proc import {filename} {
         return
     }
 
+    set r ""
     set fh [open $filename {r}]
     set lines [split [read $fh] "\n"]
     close $fh
@@ -274,32 +275,53 @@ proc ipset_populate {setname type values family} {
     exec ipset destroy $temp
 }
 
+# creats an empty ipset
+proc ipset_empty {setname type family} {
+    # the real set might not exist if this is the inital exec
+    try {
+        exec ipset create $setname $type family $family
+    } trap {} {result options} {
+        #if {$trace} { puts "# temp $result" }
+    }
+
+    exec ipset flush $setname
+}
+
 proc main {prefix rawlist} {
     global debug
     global trace
 
     check_root
 
-    if {$trace} { puts "# rawlist: $rawlist" }
+    if {$trace} { puts "# rawlist:\n$rawlist" }
     
     set summarized [cidr_summarize $rawlist]
-    if {$trace} { puts "# summarized: $summarized" }
+    if {$trace} { puts "# summarized:\n$summarized" }
     
     set sorted [process_results $summarized]
-    if {$trace} { puts "# sorted: $sorted" }
+    if {$trace} { puts "# sorted:\n$sorted" }
 
 
     if {$debug} { puts "# ipset; creating and populating" }
     if { [llength [lindex $sorted 0]] > 0 } {
         ipset_populate "${prefix}-host" "iphash" [lindex $sorted 0] "ipv4"
+    } else {
+        if {$debug} { puts "# ipset; flushing ${prefix}-host no values" }
+        ipset_empty "${prefix}-host" "iphash" "ipv4"
     }
   
     if { [llength [lindex $sorted 1]] > 0 } {
         ipset_populate "${prefix}-net" "nethash" [lindex $sorted 1] "ipv4"
+    } else {
+        if {$debug} { puts "# ipset; flushing ${prefix}-net no values" }
+        ipset_empty "${prefix}-net" "nethash" "ipv4"
     }
 
     if { [llength [lindex $sorted 2]] > 0 } {
         ipset_populate "${prefix}-net6" "nethash" [lindex $sorted 2] "ipv6"
+    } else {
+        if {$debug} { puts "# ipset; flushing ${prefix}-net6 no values" }
+        ipset_empty "${prefix}-net6" "nethash" "ipv6"
     }
 }
 

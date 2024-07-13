@@ -1,0 +1,7 @@
+#! /usr/bin/env bash
+
+(
+/opt/tcl-ipset/ipset-private.tcl;
+/opt/tcl-ipset/ipset-denylists.tcl;
+/etc/init.d/ipset save
+) 2>&1 > /var/log/ipset_update.log
