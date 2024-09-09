@@ -14,7 +14,7 @@ source $path/dns.tcl
 proc help {} {
     puts "FQDN hostname input to ipset"
     puts "Usage:     $::argv0 <setname> <file> (retry default:1)"
-    puts "Example:   $::argv0 admin lists/local.admin-hosts" 5
+    puts "Example:   $::argv0 admin lists/local.admin-hosts 5"
     exit 64
 }
 
