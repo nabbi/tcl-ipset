@@ -216,8 +216,10 @@ proc process_results {results} {
                 lappend haship $r
                 continue
             }
-            unset ip
-            unset mask
+            # ip::is 4 also accepts forms such as "10.1" or "10/8" which the
+            # patterns above do not; skip them like any other unparsed line
+            if {$debug} { puts "# ignore unparsed  $r" }
+            continue
 
         # TODO expand ipv6 checks
         } elseif { [ip::is 6 $r] } {
