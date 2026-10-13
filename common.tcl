@@ -73,7 +73,7 @@ proc cache_r {hash} {
     global debug
 
     if { ! [file exists $path/cache/$hash] } {
-        if ($debug) { puts "# no cache file found for $url" }
+        if ($debug) { puts "# no cache file found for $hash" }
         return "# empty"
     }
 
