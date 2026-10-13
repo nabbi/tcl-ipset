@@ -1,0 +1,198 @@
+# exclusions through the real aggregate-cidr, and the old exact-string
+# behaviour through aggregateCIDR.pl, checked address by address
+
+source [file join [file dirname [info script]] helpers.tcl]
+load_common
+
+# the list ipset-denylists.tcl uses
+set denylist_exclude {
+    10.0.0.0/8 192.168.0.0/16 172.16.0.0/12
+    140.82.112.4 140.82.112.3 140.82.114.3
+    185.199.108.133 185.199.110.133 185.199.111.133
+}
+
+# summarize with only the named real tool on PATH
+proc with_tool {tool input exclude} {
+    bin_reset
+    install_real $tool
+    set ::exclude $exclude
+    return [lines [cidr_summarize $input]]
+}
+
+# IPv4 addresses covered by a list of entries, sorted unique
+proc covered {entries} {
+    set r {}
+    foreach e $entries { lappend r {*}[expand4 $e] }
+    return [lsort -integer -unique $r]
+}
+
+# --- aggregate-cidr ---------------------------------------------------------
+
+test rust-1.1 {an excluded host inside a /24 is removed, the rest kept} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "140.82.112.0/24\n" {140.82.112.3}
+} -result [lsort {
+    140.82.112.0/31 140.82.112.2 140.82.112.4/30 140.82.112.8/29
+    140.82.112.16/28 140.82.112.32/27 140.82.112.64/26 140.82.112.128/25
+}]
+
+test rust-1.2 {an excluded host inside a summarized /31 is removed} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "140.82.114.2\n140.82.114.3\n" {140.82.114.3}
+} -result 140.82.114.2
+
+test rust-1.3 {an exact match is removed} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "10.0.0.0/8\n1.2.3.4\n" {10.0.0.0/8}
+} -result 1.2.3.4
+
+test rust-1.4 {a prefix inside an excluded network is removed entirely} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "10.1.0.0/16\n172.16.5.5\n192.168.1.0/24\n8.8.8.8\n" {10.0.0.0/8 172.16.0.0/12 192.168.0.0/16}
+} -result 8.8.8.8
+
+test rust-1.5 {an exclusion that overlaps nothing changes nothing} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "10.0.0.0/24\n" {10.0.1.0/24}
+} -result 10.0.0.0/24
+
+test rust-1.6 {excluding everything leaves nothing} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "10.0.0.1\n10.0.0.2\n" {10.0.0.0/24}
+} -result {}
+
+test rust-1.7 {IPv6 exclusions split IPv6 prefixes} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "2001:db8::/126\n" {2001:db8::2}
+} -result [lsort {2001:db8::/127 2001:db8::3}]
+
+test rust-1.8 {IPv4 and IPv6 exclusions apply to their own family} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "10.0.0.0/31\n2001:db8::/127\n" {10.0.0.1 2001:db8::}
+} -result [lsort {10.0.0.0 2001:db8::1}]
+
+test rust-1.9 {the denylist exclusions on firehol-like input} -constraints aggregateCidr -body {
+    set in {
+        10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+        140.82.112.0/22 185.199.108.0/22 1.2.3.0/24
+    }
+    set out [with_tool aggregate-cidr [join $in "\n"] $denylist_exclude]
+
+    # every listed address except the excluded ones, RFC 1918 gone entirely
+    set want [lsort -integer [concat \
+        [covered 1.2.3.0/24] [covered 140.82.112.0/22] [covered 185.199.108.0/22]]]
+    foreach e [lrange $denylist_exclude 3 end] {
+        set i [lsearch -sorted -integer $want [ip2int $e]]
+        set want [lreplace $want $i $i]
+    }
+    set total 0
+    foreach o $out { incr total [llength [expand4 $o]] }
+    list [expr {[covered $out] eq $want}] [expr {$total == [llength $want]}] \
+        [lsearch -inline -glob $out 140.82.112.*] [lsearch -all -inline -glob $out 10.*]
+} -result {1 1 140.82.112.0/31 {}}
+
+test rust-1.10 {an invalid exclusion is an error, not skipped} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "1.2.3.4\n" {10.0.0.300}
+} -returnCodes error -match glob -result {*invalid exclusion '10.0.0.300'*}
+
+test rust-1.11 {one invalid exclusion fails the whole list} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "10.0.0.0/8\n1.2.3.4\n" {10.0.0.0/8 bogus}
+} -returnCodes error -match glob -result {*invalid exclusion 'bogus'*}
+
+test rust-1.12 {exclusions with surrounding whitespace} -constraints aggregateCidr -body {
+    with_tool aggregate-cidr "10.0.0.0/30\n" [list " 10.0.0.1 "]
+} -result [lsort {10.0.0.0 10.0.0.2/31}]
+
+test rust-1.13 {exclusion order and duplicates do not matter} -constraints aggregateCidr -body {
+    set a [with_tool aggregate-cidr "10.0.0.0/24\n" {10.0.0.7 10.0.0.200 10.0.0.7}]
+    set b [with_tool aggregate-cidr "10.0.0.0/24\n" {10.0.0.200 10.0.0.7}]
+    expr {$a eq $b}
+} -result 1
+
+# random input and exclusions inside 10.0.0.0/22, checked by expanding
+# every prefix to its addresses: the output must cover exactly
+# (input - excluded), with no prefix overlapping another
+proc random_entry {} {
+    set len [expr {22 + int(rand() * 11)}]
+    set size [expr {1 << (32 - $len)}]
+    set offset [expr {int(rand() * (1024 / $size)) * $size}]
+    set a [int2ip [expr {[ip2int 10.0.0.0] + $offset}]]
+    if { $len == 32 && rand() < 0.5 } { return $a }
+    return $a/$len
+}
+
+proc random_entries {n} {
+    set r {}
+    for {set i 0} {$i < $n} {incr i} { lappend r [random_entry] }
+    return $r
+}
+
+set seed [expr {[info exists ::env(SEED)] ? $::env(SEED) : 20261012}]
+set iterations [expr {[info exists ::env(ITERATIONS)] ? $::env(ITERATIONS) : 150}]
+
+test rust-2.1 "random exclusions are exact set subtraction (seed $seed, $iterations runs)" -constraints aggregateCidr -body {
+    expr {srand($seed)}
+    set failures {}
+    for {set i 0} {$i < $iterations} {incr i} {
+        set in [random_entries [expr {1 + int(rand() * 12)}]]
+        set ex [random_entries [expr {int(rand() * 6)}]]
+        set out [with_tool aggregate-cidr [join $in "\n"] $ex]
+
+        set want {}
+        set drop [covered $ex]
+        foreach a [covered $in] {
+            if { [lsearch -sorted -integer $drop $a] < 0 } { lappend want $a }
+        }
+        set got [covered $out]
+        set total 0
+        foreach o $out { incr total [llength [expand4 $o]] }
+
+        if { $got ne $want || $total != [llength $got] } {
+            lappend failures [list in $in exclude $ex out $out]
+        }
+    }
+    set failures
+} -result {}
+
+test rust-2.2 "random input without exclusions keeps every address (seed $seed)" -constraints aggregateCidr -body {
+    expr {srand($seed + 1)}
+    set failures {}
+    for {set i 0} {$i < $iterations} {incr i} {
+        set in [random_entries [expr {1 + int(rand() * 12)}]]
+        set out [with_tool aggregate-cidr [join $in "\n"] {}]
+        if { [covered $out] ne [covered $in] } {
+            lappend failures [list in $in out $out]
+        }
+    }
+    set failures
+} -result {}
+
+# --- aggregateCIDR.pl: the old behaviour, documented by these tests ----------
+
+test perl-1.1 {an excluded host inside a /24 stays blocked} -constraints perlAggregate -body {
+    with_tool aggregateCIDR.pl "140.82.112.0/24\n" {140.82.112.3}
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n" \
+  -result 140.82.112.0/24
+
+test perl-1.2 {an excluded host merged into a /31 stays blocked} -constraints perlAggregate -body {
+    with_tool aggregateCIDR.pl "140.82.114.2\n140.82.114.3\n" {140.82.114.3}
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n" \
+  -result 140.82.114.2/31
+
+test perl-1.3 {an exact match is removed} -constraints perlAggregate -body {
+    with_tool aggregateCIDR.pl "10.0.0.0/8\n1.2.3.4\n" {10.0.0.0/8}
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n" \
+  -result 1.2.3.4
+
+test perl-1.4 {an invalid exclusion is silently ignored} -constraints perlAggregate -body {
+    with_tool aggregateCIDR.pl "1.2.3.4\n" {10.0.0.300}
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n" \
+  -result 1.2.3.4
+
+# --- both tools agree when nothing is excluded ------------------------------
+
+test both-1.1 "aggregate-cidr and aggregateCIDR.pl load the same sets (seed $seed)" -constraints {aggregateCidr perlAggregate} -body {
+    expr {srand($seed + 2)}
+    set failures {}
+    for {set i 0} {$i < 50} {incr i} {
+        set in [join [random_entries [expr {1 + int(rand() * 20)}]] "\n"]
+        set rust [process_results [join [with_tool aggregate-cidr $in {}] "\n"]]
+        set perl [process_results [join [with_tool aggregateCIDR.pl $in {}] "\n"]]
+        if { $rust ne $perl } { lappend failures [list in $in rust $rust perl $perl] }
+    }
+    set failures
+} -result {}
+
+finish

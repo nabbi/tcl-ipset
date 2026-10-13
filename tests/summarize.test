@@ -1,0 +1,218 @@
+# cidr_summarize: tool selection and how the exclusion list is passed on,
+# using fake tools that record how they were called
+
+source [file join [file dirname [info script]] helpers.tcl]
+load_common
+
+# fake aggregate-cidr that saves the --exclude file so tests can inspect it
+proc fake_rust {} {
+    fake_logged aggregate-cidr [string map [list LOGDIR $::log] {
+if [ "$2" = "--exclude" ]; then
+    echo "$3" > LOGDIR/exclude-path
+    /bin/cp "$3" LOGDIR/exclude-copy
+fi
+exec /bin/cat}]
+}
+
+test summarize-1.1 {neither tool: input returned unchanged} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+} -body {
+    cidr_summarize "10.0.0.0/24\n10.0.1.0/24\n"
+} -result "10.0.0.0/24\n10.0.1.0/24\n"
+
+test summarize-1.2 {only aggregateCIDR.pl: it is used with -q} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake_logged aggregateCIDR.pl {echo perl-out}
+} -body {
+    list [cidr_summarize "1.2.3.4\n"] [calls aggregateCIDR.pl]
+} -result {perl-out -q}
+
+test summarize-1.3 {only aggregate-cidr: it is used with -q} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake_logged aggregate-cidr {echo rust-out}
+} -body {
+    list [cidr_summarize "1.2.3.4\n"] [calls aggregate-cidr]
+} -result {rust-out -q}
+
+test summarize-1.4 {both tools: aggregate-cidr wins} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake_logged aggregate-cidr {echo rust-out}
+    fake_logged aggregateCIDR.pl {echo perl-out}
+} -body {
+    list [cidr_summarize "1.2.3.4\n"] [calls aggregate-cidr] [calls aggregateCIDR.pl]
+} -result {rust-out -q {}}
+
+test summarize-1.5 {input reaches the tool on stdin} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake_logged aggregate-cidr
+} -body {
+    cidr_summarize "10.0.0.0/24\n2001:db8::/32"
+} -result "10.0.0.0/24\n2001:db8::/32"
+
+test summarize-1.6 {a directory named like the tool is not used} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    file mkdir [file join $::bin aggregate-cidr]
+    fake_logged aggregateCIDR.pl {echo perl-out}
+} -body {
+    cidr_summarize "1.2.3.4\n"
+} -result perl-out
+
+test summarize-1.7 {a non-executable file named like the tool is not used} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    write_file [file join $::bin aggregate-cidr] "#!/bin/sh\necho no\n"
+    file attributes [file join $::bin aggregate-cidr] -permissions 0644
+} -body {
+    cidr_summarize "1.2.3.4"
+} -result 1.2.3.4
+
+test summarize-1.8 {debug names the tool and its path} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake_logged aggregate-cidr
+    set ::debug 1
+} -body {
+    cidr_summarize "1.2.3.4"
+} -cleanup {
+    set ::debug 0
+} -output "# summarizing using aggregate-cidr ([file join $::bin aggregate-cidr])\n" \
+  -result 1.2.3.4
+
+test summarize-1.9 {a failing tool raises an error rather than returning partial output} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake aggregate-cidr {echo partial; exit 1}
+} -body {
+    cidr_summarize "1.2.3.4"
+} -returnCodes error -match glob -result *
+
+test summarize-1.10 {stderr from the tool is an error (why -q is passed)} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake aggregate-cidr {echo warning >&2; exec /bin/cat}
+} -body {
+    cidr_summarize "1.2.3.4"
+} -returnCodes error -match glob -result *warning
+
+# exclusion plumbing
+
+test summarize-2.1 {no exclude variable: no --exclude} -setup {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake_logged aggregate-cidr
+} -body {
+    cidr_summarize "1.2.3.4"
+    calls aggregate-cidr
+} -result -q
+
+test summarize-2.2 {empty exclude list: no --exclude} -setup {
+    bin_reset
+    set ::exclude {}
+    fake_logged aggregate-cidr
+} -body {
+    cidr_summarize "1.2.3.4"
+    calls aggregate-cidr
+} -result -q
+
+test summarize-2.3 {exclude list is passed as an --exclude file, one entry per line} -setup {
+    bin_reset
+    set ::exclude {10.0.0.0/8 140.82.112.3 2001:db8::/32}
+    fake_rust
+} -body {
+    cidr_summarize "1.2.3.4"
+    list [lrange [lindex [calls aggregate-cidr] 0] 0 1] \
+        [read_file [file join $::log exclude-copy]]
+} -result [list {-q --exclude} "10.0.0.0/8\n140.82.112.3\n2001:db8::/32\n"]
+
+test summarize-2.4 {the --exclude temp file is removed afterwards} -setup {
+    bin_reset
+    set ::exclude {10.0.0.0/8}
+    fake_rust
+} -body {
+    cidr_summarize "1.2.3.4"
+    file exists [string trim [read_file [file join $::log exclude-path]]]
+} -result 0
+
+test summarize-2.5 {the temp file is removed when the tool fails} -setup {
+    bin_reset
+    set ::exclude {10.0.0.0/8}
+    fake aggregate-cidr "echo \"\$3\" > [file join $::log exclude-path]; exit 1"
+} -body {
+    catch {cidr_summarize "1.2.3.4"}
+    file exists [string trim [read_file [file join $::log exclude-path]]]
+} -result 0
+
+test summarize-2.6 {exclusions are not string-matched again after aggregate-cidr} -setup {
+    bin_reset
+    set ::exclude {1.2.3.4}
+    # a fake that ignores --exclude: the line must survive, proving the
+    # legacy filter did not run on aggregate-cidr output
+    fake aggregate-cidr {exec /bin/cat}
+} -body {
+    cidr_summarize "1.2.3.4"
+} -result 1.2.3.4
+
+test summarize-2.7 {without aggregate-cidr, aggregateCIDR.pl output is string-filtered} -setup {
+    bin_reset
+    set ::exclude {10.0.0.0/8 140.82.112.3}
+    fake_logged aggregateCIDR.pl
+} -body {
+    cidr_summarize "10.0.0.0/8\n140.82.112.3\n140.82.112.0/24"
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n" \
+  -result 140.82.112.0/24
+
+test summarize-2.8 {aggregateCIDR.pl never gets --exclude} -setup {
+    bin_reset
+    set ::exclude {10.0.0.0/8}
+    fake_logged aggregateCIDR.pl
+} -body {
+    cidr_summarize "1.2.3.4"
+    calls aggregateCIDR.pl
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n" \
+  -result -q
+
+# exclude_exact, the fallback
+
+test exact-1.1 {no exclude variable: unchanged, no warning} -setup {
+    unset -nocomplain ::exclude
+} -body {
+    exclude_exact "a\nb"
+} -output "" -result "a\nb"
+
+test exact-1.2 {empty list: unchanged, no warning} -setup {
+    set ::exclude {}
+} -body {
+    exclude_exact "a\nb"
+} -output "" -result "a\nb"
+
+test exact-1.3 {drops identical lines only} -setup {
+    set ::exclude {140.82.112.3 10.0.0.0/8}
+} -body {
+    exclude_exact "140.82.112.3\n140.82.112.2/31\n10.0.0.0/8\n10.0.0.0/9\n1.2.3.4"
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n" \
+  -result "140.82.112.2/31\n10.0.0.0/9\n1.2.3.4"
+
+test exact-1.4 {entries are literal, not glob patterns} -setup {
+    set ::exclude {10.0.0.*}
+} -body {
+    exclude_exact "10.0.0.1\n10.0.0.*"
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n" \
+  -result 10.0.0.1
+
+test exact-1.5 {debug reports each excluded line} -setup {
+    set ::exclude {1.2.3.4}
+    set ::debug 1
+} -body {
+    exclude_exact "1.2.3.4\n5.6.7.8"
+} -cleanup {
+    set ::debug 0
+} -output "# aggregate-cidr not found; exclusions only match identical entries\n# excluding 1.2.3.4\n" \
+  -result 5.6.7.8
+
+finish

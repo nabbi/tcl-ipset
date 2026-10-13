@@ -1,3 +1,4 @@
 cache
 *.swp
 lists/local.*
+tests/.work
