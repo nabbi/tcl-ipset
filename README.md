@@ -2,7 +2,7 @@
 
 TCL scripts for managing ipset (iptables address sets)
 
-* Intergrates with [CIDR Route Summarizaion](https://github.com/nabbi/route-summarization)
+* Integrates with [CIDR Route Summarization](https://github.com/nabbi/route-summarization-rs) (`aggregate-cidr`), falling back to the [Perl version](https://github.com/nabbi/route-summarization) (`aggregateCIDR.pl`)
 * IPv4 and IPv6 support
 * FQDN hostname lookups to IP addresses
 * source from url or local files

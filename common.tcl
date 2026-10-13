@@ -130,25 +130,24 @@ proc import {filename} {
     return $r
 }
 
-# check for https://github.com/nabbi/route-summarization
-# does nothing if not found in system path
+# summarize with the first tool found in the system path:
+#   aggregate-cidr     https://github.com/nabbi/route-summarization-rs
+#   aggregateCIDR.pl   https://github.com/nabbi/route-summarization
+# does nothing if neither is found
+# keep -q: exec treats any stderr output as an error
 proc cidr_summarize {r} {
     global debug
 
-    try {
-        set cmd [exec which aggregateCIDR.pl]
-        set status 0
-    } trap CHILDSTATUS {cmd options} {
-        set status [lindex [dict get $options -errorcode] 2]
+    foreach tool {aggregate-cidr aggregateCIDR.pl} {
+        set cmd [auto_execok $tool]
+        if { [llength $cmd] } {
+            if {$debug} { puts "# summarizing using $tool ($cmd)" }
+            return [exec {*}$cmd -q << $r]
+        }
     }
 
-    if { $status } {
-        # do nothing but pass it back
-        return $r
-    } else {
-        if ($debug) { puts "# summarizing using Perl Net::CIDR::Lite" }
-        return [exec aggregateCIDR.pl -q << $r]
-    }
+    # do nothing but pass it back
+    return $r
 }
 
 # Sorts the fetched url results into hosts and network lists
