@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: nabbi/route-summarization
+          path: route-summarization
+      - uses: actions/checkout@v5
+        with:
+          repository: nabbi/route-summarization-rs
+          path: route-summarization-rs
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y tcl tcllib libnet-cidr-lite-perl
+      - run: cargo build --release --locked --manifest-path route-summarization-rs/Cargo.toml
+      # REQUIRE_TOOLS: fail rather than skip the tests that need both summarizers
+      - run: tclsh tests/all.tcl -verbose e
+        env:
+          REQUIRE_TOOLS: "1"
+          AGGREGATE_CIDR: ${{ github.workspace }}/route-summarization-rs/target/release/aggregate-cidr
+          PERL_AGGREGATE: ${{ github.workspace }}/route-summarization/aggregateCIDR.pl

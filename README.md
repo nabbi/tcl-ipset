@@ -76,3 +76,21 @@ YMMV
 0 1 * * *       root    /opt/tcl-ipset/ipset-denylists.tcl && /etc/init.d/ipset save >  /var/log/ipset-denylist.log 2>&1
 ```
 
+
+## Testing
+
+```shell
+tclsh tests/all.tcl
+```
+
+Needs Tcl 8.6 and tcllib. No root or ipset is required: fake `ipset`, `id`,
+`curl` and `dig` commands record what the scripts would have run, and each
+script runs from a scratch copy so its url cache stays out of the checkout.
+
+Tests that need the real summarizers run when `aggregate-cidr`, or
+`aggregateCIDR.pl` with perl and Net::CIDR::Lite, are on `PATH`, and are
+skipped otherwise. Point at other copies with `AGGREGATE_CIDR=/path` or
+`PERL_AGGREGATE=/path`; set `REQUIRE_TOOLS=1` (as CI does) to fail instead
+of skipping. `SEED` and `ITERATIONS` control the randomized exclusion test.
+
+Useful options: `-file exclude.test`, `-match 'rust-*'`, `-verbose bpe`.
