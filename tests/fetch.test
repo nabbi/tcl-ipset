@@ -1,0 +1,169 @@
+# import, the url cache, and curl with a fake curl command
+
+source [file join [file dirname [info script]] helpers.tcl]
+load_common
+
+set ::path [file join $::work app]
+
+proc cache_file {url} {
+    file join $::path cache [sha2::sha256 $url]
+}
+
+proc cache_reset {} {
+    file delete -force [file join $::path cache]
+}
+
+# --- import -------------------------------------------------------------------
+
+test import-1.1 {comments and blank lines are dropped, the rest kept in order} -setup {
+    write_file [file join $::work list] "# comment\n\n1.2.3.4\n10.0.0.0/8\n\n#x\nhost.example\n"
+} -body {
+    import [file join $::work list]
+} -result "1.2.3.4\n10.0.0.0/8\nhost.example\n"
+
+test import-1.2 {a missing file is skipped with a message} -body {
+    import [file join $::work nope]
+} -output "File not found, skipping [file join $::work nope]\n" -result {}
+
+test import-1.3 {a file without a trailing newline keeps its last line} -setup {
+    write_file [file join $::work list] "1.2.3.4\n5.6.7.8"
+} -body {
+    import [file join $::work list]
+} -result "1.2.3.4\n5.6.7.8\n"
+
+test import-1.4 {an empty file} -setup {
+    write_file [file join $::work list] ""
+} -body {
+    import [file join $::work list]
+} -result {}
+
+test import-1.5 {the shipped private list parses} -body {
+    process_results [import [file join $::repo lists private]]
+} -match glob -result {255.255.255.255 {*10.0.0.0/8*} {*fc00::/7*}}
+
+# --- cache --------------------------------------------------------------------
+
+test cache-1.1 {write then read back, with a timestamp header} -setup {
+    cache_reset
+} -body {
+    cache_w abc "1.2.3.4\n5.6.7.8"
+    set data [cache_r abc]
+    list [regexp {^# \d+\n} $data] [lines $data]
+} -result {1 {1.2.3.4 5.6.7.8}}
+
+test cache-1.2 {reading a missing entry returns a comment} -setup {
+    cache_reset
+} -body {
+    cache_r missing
+} -result {# empty}
+
+test cache-1.3 {reading a missing entry with debug on} -setup {
+    cache_reset
+    set ::debug 1
+} -body {
+    cache_r missing
+} -cleanup {
+    set ::debug 0
+} -output "# no cache file found for missing\n" -result {# empty}
+
+test cache-1.4 {a fresh entry is valid} -setup {
+    cache_reset
+    cache_w fresh x
+} -body {
+    cache_valid fresh
+} -result true
+
+test cache-1.5 {an entry older than an hour is not valid} -setup {
+    cache_reset
+    cache_w old x
+    file mtime [file join $::path cache old] [expr {[clock seconds] - 3601}]
+} -body {
+    cache_valid old
+} -result false
+
+test cache-1.6 {a missing entry is not valid} -setup {
+    cache_reset
+} -body {
+    cache_valid missing
+} -result false
+
+# --- curl ---------------------------------------------------------------------
+
+set url https://lists.example/level1.netset
+
+test curl-1.1 {a successful fetch is returned and cached} -setup {
+    bin_reset
+    cache_reset
+    fake_logged curl {echo 1.2.3.4; echo 10.0.0.0/8}
+} -body {
+    list [curl $url] [lines [read_file [cache_file $url]]] [llength [calls curl]]
+} -result [list "1.2.3.4\n10.0.0.0/8" {1.2.3.4 10.0.0.0/8} 1]
+
+test curl-1.2 {curl is called with fail, timeout and the url last} -setup {
+    bin_reset
+    cache_reset
+    fake_logged curl {echo x}
+} -body {
+    curl $url
+    set args [lindex [calls curl] 0]
+    list [lindex $args end] [string match *--fail* $args] [string match {*--max-time 15*} $args]
+} -result [list $url 1 1]
+
+test curl-1.3 {a recent cache entry is used without fetching} -setup {
+    bin_reset
+    cache_reset
+    fake_logged curl {echo fetched}
+    cache_w [sha2::sha256 $url] cached
+} -body {
+    list [lines [curl $url]] [calls curl]
+} -output "# using recent cache file for $url\n" -result {cached {}}
+
+test curl-1.4 {a stale cache entry is refreshed} -setup {
+    bin_reset
+    cache_reset
+    fake_logged curl {echo fetched}
+    cache_w [sha2::sha256 $url] cached
+    file mtime [cache_file $url] [expr {[clock seconds] - 7200}]
+} -body {
+    list [curl $url] [lines [read_file [cache_file $url]]]
+} -result {fetched fetched}
+
+test curl-1.5 {a failed fetch falls back to a stale cache entry} -setup {
+    bin_reset
+    cache_reset
+    fake curl {exit 22}
+    cache_w [sha2::sha256 $url] cached
+    file mtime [cache_file $url] [expr {[clock seconds] - 7200}]
+} -body {
+    lines [curl $url]
+} -output "# curl error 22 $url\n# falling back to cache file, if it exists\n" -result cached
+
+test curl-1.6 {a failed fetch with no cache returns a comment} -setup {
+    bin_reset
+    cache_reset
+    fake curl {exit 28}
+} -body {
+    curl $url
+} -output "# curl error 28 $url\n# falling back to cache file, if it exists\n" -result {# empty}
+
+test curl-1.7 {a failed fetch does not overwrite the cache} -setup {
+    bin_reset
+    cache_reset
+    fake curl {exit 7}
+    cache_w [sha2::sha256 $url] cached
+    file mtime [cache_file $url] [expr {[clock seconds] - 7200}]
+} -body {
+    curl $url
+    lines [read_file [cache_file $url]]
+} -output "# curl error 7 $url\n# falling back to cache file, if it exists\n" -result cached
+
+test fetch_all-1.1 {lists are joined with a newline even without a trailing one} -setup {
+    bin_reset
+    cache_reset
+    # printf without a newline, so the last and next first entries would merge
+    fake curl {case "$*" in *a.list) printf 1.1.1.1 ;; *) printf 2.2.2.2 ;; esac}
+} -body {
+    lines [fetch_all {https://x/a.list https://x/b.list}]
+} -result {1.1.1.1 2.2.2.2}
+
+finish
