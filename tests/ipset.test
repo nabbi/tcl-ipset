@@ -1,0 +1,147 @@
+# ipset procs and main, with fake ipset and id commands recording calls
+
+source [file join [file dirname [info script]] helpers.tcl]
+load_common
+
+proc ipset_setup {} {
+    bin_reset
+    unset -nocomplain ::exclude
+    fake_logged ipset {:}
+    fake id {echo 0}
+}
+
+# ipset calls that change a set's contents, ignoring the temp-set bookkeeping
+proc adds {set} {
+    set r {}
+    foreach c [calls ipset] {
+        if { [lrange $c 0 1] eq [list add $set-temp] } { lappend r [lindex $c 2] }
+    }
+    return $r
+}
+
+test populate-1.1 {builds a temp set and swaps it in} -setup {
+    ipset_setup
+} -body {
+    ipset_populate deny-net nethash {10.0.0.0/8 1.2.3.0/24} ipv4
+    calls ipset
+} -result [list \
+    {destroy deny-net-temp} \
+    {create deny-net nethash family ipv4} \
+    {create deny-net-temp nethash family ipv4} \
+    {add deny-net-temp 10.0.0.0/8} \
+    {add deny-net-temp 1.2.3.0/24} \
+    {swap deny-net-temp deny-net} \
+    {destroy deny-net-temp} \
+]
+
+test populate-1.2 {a leftover temp set or an existing set is not an error} -setup {
+    ipset_setup
+    # no temp set to destroy yet, and the real set already exists
+    fake_logged ipset [string map [list LOG $::log] {case "$1 $2" in
+"destroy deny-host-temp") [ -e LOG/temp ] || { echo "does not exist"; exit 1; } ;;
+"create deny-host") echo "already exists"; exit 1 ;;
+"create deny-host-temp") : > LOG/temp ;;
+esac
+exit 0}]
+} -body {
+    ipset_populate deny-host iphash {1.2.3.4} ipv4
+    llength [calls ipset]
+} -result 6
+
+test populate-1.3 {a rejected entry is reported and the rest still loaded} -setup {
+    ipset_setup
+    fake_logged ipset {[ "$1 $3" = "add 2.2.2.2" ] && { echo "rejected"; exit 1; }
+exit 0}
+} -body {
+    ipset_populate deny-host iphash {1.1.1.1 2.2.2.2 3.3.3.3} ipv4
+    adds deny-host
+} -output "# 2.2.2.2 rejected\nchild process exited abnormally\n" \
+  -result {1.1.1.1 2.2.2.2 3.3.3.3}
+
+test populate-1.4 {IPv6 family is passed through} -setup {
+    ipset_setup
+} -body {
+    ipset_populate deny-net6 nethash {2001:db8::/32} ipv6
+    lindex [calls ipset] 1
+} -result {create deny-net6 nethash family ipv6}
+
+test empty-1.1 {creates if needed, then flushes} -setup {
+    ipset_setup
+} -body {
+    ipset_empty deny-net6 nethash ipv6
+    calls ipset
+} -result {{create deny-net6 nethash family ipv6} {flush deny-net6}}
+
+test root-1.1 {root passes} -setup {
+    ipset_setup
+} -body {
+    check_root
+} -result {}
+
+test root-1.2 {non-root exits 1 before touching ipset} -setup {
+    ipset_setup
+    fake id {echo 1000}
+} -body {
+    run_tcl "set debug 0; set trace 0; source [list [file join $::repo common.tcl]]
+        main deny {1.2.3.4}"
+} -match glob -result {1 {ipset commands requires root permissions*}}
+
+# main
+
+test main-1.1 {hosts, networks and IPv6 go to their own sets} -setup {
+    ipset_setup
+} -body {
+    main deny "1.2.3.4\n10.0.0.0/8\n2001:db8::/32\n"
+    list [adds deny-host] [adds deny-net] [adds deny-net6]
+} -result {1.2.3.4 10.0.0.0/8 2001:db8::/32}
+
+test main-1.2 {set types and families} -setup {
+    ipset_setup
+} -body {
+    main deny "1.2.3.4\n10.0.0.0/8\n2001:db8::/32\n"
+    lsearch -all -inline -glob [calls ipset] {create deny-* *}
+} -result [list \
+    {create deny-host iphash family ipv4} \
+    {create deny-host-temp iphash family ipv4} \
+    {create deny-net nethash family ipv4} \
+    {create deny-net-temp nethash family ipv4} \
+    {create deny-net6 nethash family ipv6} \
+    {create deny-net6-temp nethash family ipv6} \
+]
+
+test main-1.3 {empty families flush their sets} -setup {
+    ipset_setup
+} -body {
+    main deny "1.2.3.4\n"
+    lsearch -all -inline -glob [calls ipset] {flush *}
+} -result {{flush deny-net} {flush deny-net6}}
+
+test main-1.4 {empty input flushes all three sets} -setup {
+    ipset_setup
+} -body {
+    main deny "# nothing\n"
+    lsearch -all -inline -glob [calls ipset] {flush *}
+} -result {{flush deny-host} {flush deny-net} {flush deny-net6}}
+
+test main-1.5 {an invalid exclusion stops main before any ipset call} -constraints aggregateCidr -setup {
+    ipset_setup
+    install_real aggregate-cidr
+    set ::exclude {not-an-address}
+} -body {
+    list [catch {main deny "1.2.3.4\n"}] [calls ipset]
+} -cleanup {
+    unset ::exclude
+} -result {1 {}}
+
+test main-1.6 {with aggregate-cidr, summarized and excluded before loading} -constraints aggregateCidr -setup {
+    ipset_setup
+    install_real aggregate-cidr
+    set ::exclude {10.0.0.0/8 1.2.3.5}
+} -body {
+    main deny "1.2.3.4\n1.2.3.5\n1.2.3.6/31\n10.1.0.0/16\n8.8.8.8\n2001:db8::/33\n2001:db8:8000::/33\n"
+    list [adds deny-host] [adds deny-net] [adds deny-net6]
+} -cleanup {
+    unset ::exclude
+} -result {{1.2.3.4 8.8.8.8} 1.2.3.6/31 2001:db8::/32}
+
+finish

@@ -6,19 +6,13 @@ namespace import ::tcltest::*
 
 set ::repo [file normalize [file join [file dirname [info script]] ..]]
 
-# scratch space under the repo rather than /tmp: fake commands must be
-# executable, and /tmp is often mounted noexec
-set ::work [file join $::repo tests .work [pid]]
-file delete -force $::work
-file mkdir $::work
-set ::bin [file join $::work bin]
-set ::log [file join $::work log]
-
 # locate the real tools before PATH is replaced
 # AGGREGATE_CIDR / PERL_AGGREGATE override the PATH lookup
 proc find_real {envvar name} {
     if { [info exists ::env($envvar)] } {
-        return [file normalize $::env($envvar)]
+        set f [file normalize $::env($envvar)]
+        if { [file executable $f] && ! [file isdirectory $f] } { return $f }
+        return ""
     }
     set p [auto_execok $name]
     if { [llength $p] } { return [lindex $p 0] }
@@ -42,6 +36,14 @@ if { [info exists ::env(REQUIRE_TOOLS)] && $::env(REQUIRE_TOOLS) } {
         }
     }
 }
+
+# scratch space under the repo rather than /tmp: fake commands must be
+# executable, and /tmp is often mounted noexec
+set ::work [file join $::repo tests .work [pid]]
+file delete -force $::work
+file mkdir $::work
+set ::bin [file join $::work bin]
+set ::log [file join $::work log]
 
 # empty bin directory as the whole PATH: only the commands a test installs
 # can be found. fakes use absolute paths for anything they run themselves

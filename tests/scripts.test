@@ -1,0 +1,232 @@
+# end to end: run each ipset-*.tcl script in its own tclsh against fake
+# ipset, id, curl and dig. scripts run from a copy of the repo so the url
+# cache they write stays in the scratch directory
+
+source [file join [file dirname [info script]] helpers.tcl]
+source [file join $::repo dns.tcl]
+
+set ::app [file join $::work app]
+
+proc app_reset {} {
+    bin_reset
+    file delete -force $::app
+    file mkdir $::app
+    foreach f [glob -directory $::repo *.tcl] { file copy $f $::app }
+    file copy [file join $::repo lists] $::app
+    fake_logged ipset {:}
+    fake id {echo 0}
+}
+
+# run a script from the copy, returning {exitcode output}
+proc run_script {name args} {
+    set code 0
+    if { [catch {exec [info nameofexecutable] [file join $::app $name] {*}$args 2>@1} out opts] } {
+        set ec [dict get $opts -errorcode]
+        set code [expr {[lindex $ec 0] eq "CHILDSTATUS" ? [lindex $ec 2] : -1}]
+    }
+    return [list $code $out]
+}
+
+proc adds {set} {
+    set r {}
+    foreach c [calls ipset] {
+        if { [lrange $c 0 1] eq [list add $set-temp] } { lappend r [lindex $c 2] }
+    }
+    return [lsort $r]
+}
+
+# firehol stand-in: each level returns its own fixture
+proc fake_firehol {} {
+    fake_logged curl {case "$*" in
+*level1*) printf '%s\n' '# level1' 10.0.0.0/8 192.168.0.0/16 140.82.112.0/24 1.2.3.0/25 ;;
+*level2*) printf '%s\n' 1.2.3.128/25 140.82.114.2 140.82.114.3 2001:db8::/32 ;;
+*level3*) printf '%s' 185.199.108.133 ;;
+esac}
+}
+
+# --- ipset-denylists.tcl ------------------------------------------------------
+
+test denylists-1.1 {with aggregate-cidr: summarized, excluded exactly, loaded} -constraints aggregateCidr -setup {
+    app_reset
+    fake_firehol
+    install_real aggregate-cidr
+} -body {
+    lassign [run_script ipset-denylists.tcl] code out
+    list $code [adds denylist-host] [adds denylist-net] [adds denylist-net6]
+} -result [list 0 \
+    {140.82.112.2 140.82.112.5 140.82.114.2} \
+    [lsort {1.2.3.0/24 140.82.112.0/31 140.82.112.6/31 140.82.112.8/29
+            140.82.112.16/28 140.82.112.32/27 140.82.112.64/26 140.82.112.128/25}] \
+    2001:db8::/32]
+
+test denylists-1.2 {with aggregate-cidr: no excluded address is loaded} -constraints aggregateCidr -setup {
+    app_reset
+    fake_firehol
+    install_real aggregate-cidr
+} -body {
+    run_script ipset-denylists.tcl
+    set loaded [concat [adds denylist-host] [adds denylist-net]]
+    set hits {}
+    foreach a {140.82.112.3 140.82.112.4 140.82.114.3 185.199.108.133 10.1.2.3 192.168.1.1} {
+        foreach e $loaded {
+            if { [lsearch [expand4 $e] [ip2int $a]] >= 0 } { lappend hits "$a in $e" }
+        }
+    }
+    set hits
+} -result {}
+
+test denylists-1.3 {with aggregateCIDR.pl: the old behaviour, with a warning} -constraints perlAggregate -setup {
+    app_reset
+    fake_firehol
+    install_real aggregateCIDR.pl
+} -body {
+    lassign [run_script ipset-denylists.tcl] code out
+    list $code [string match "*exclusions only match identical entries*" $out] \
+        [adds denylist-host] [adds denylist-net]
+} -result {0 1 {} {1.2.3.0/24 140.82.112.0/24 140.82.114.2/31}}
+
+test denylists-1.4 {with no summarizer: exact-match exclusions, entries as listed} -setup {
+    app_reset
+    fake_firehol
+} -body {
+    lassign [run_script ipset-denylists.tcl] code out
+    list $code [string match "*exclusions only match identical entries*" $out] \
+        [adds denylist-host] [adds denylist-net]
+} -result {0 1 140.82.114.2 {1.2.3.0/25 1.2.3.128/25 140.82.112.0/24}}
+
+test denylists-1.5 {lists/local.deny is added when present} -constraints aggregateCidr -setup {
+    app_reset
+    fake_firehol
+    install_real aggregate-cidr
+    write_file [file join $::app lists local.deny] "# local\n203.0.113.7\n"
+} -body {
+    run_script ipset-denylists.tcl
+    lsearch -inline [adds denylist-host] 203.0.113.7
+} -result 203.0.113.7
+
+test denylists-1.6 {a second run within the hour uses the cache, not curl} -constraints aggregateCidr -setup {
+    app_reset
+    fake_firehol
+    install_real aggregate-cidr
+} -body {
+    run_script ipset-denylists.tcl
+    set first [llength [calls curl]]
+    lassign [run_script ipset-denylists.tcl] code out
+    list $first [llength [calls curl]] [regexp -all {using recent cache file} $out]
+} -result {3 3 3}
+
+test denylists-1.7 {curl failing with no cache still loads the other lists} -constraints aggregateCidr -setup {
+    app_reset
+    fake_logged curl {case "$*" in *level2*) printf '%s\n' 5.5.5.5 ;; *) exit 22 ;; esac}
+    install_real aggregate-cidr
+} -body {
+    lassign [run_script ipset-denylists.tcl] code out
+    list $code [adds denylist-host] [regexp -all {curl error 22} $out]
+} -result {0 5.5.5.5 2}
+
+test denylists-1.8 {not root: exit 1, nothing loaded} -setup {
+    app_reset
+    fake_firehol
+    fake id {echo 1000}
+} -body {
+    lassign [run_script ipset-denylists.tcl] code out
+    list $code [calls ipset]
+} -result {1 {}}
+
+# --- ipset-ip.tcl -------------------------------------------------------------
+
+test ip-1.1 {loads a file into the named sets} -constraints aggregateCidr -setup {
+    app_reset
+    install_real aggregate-cidr
+    write_file [file join $::work in.list] "# c\n10.0.0.0/25\n10.0.0.128/25\n1.1.1.1\nfd00::/8\n"
+} -body {
+    lassign [run_script ipset-ip.tcl office [file join $::work in.list]] code out
+    list $code [adds office-host] [adds office-net] [adds office-net6]
+} -result {0 1.1.1.1 10.0.0.0/24 fd00::/8}
+
+test ip-1.2 {the shipped private list loads} -setup {
+    app_reset
+} -body {
+    lassign [run_script ipset-ip.tcl private [file join $::app lists private]] code out
+    list $code [expr {"10.0.0.0/8" in [adds private-net]}] [expr {"fc00::/7" in [adds private-net6]}]
+} -result {0 1 1}
+
+test ip-1.3 {wrong argument count prints usage and exits 64} -setup {
+    app_reset
+} -body {
+    lassign [run_script ipset-ip.tcl onlyone] code out
+    list $code [string match "Incorrect number of arguments*Usage:*" $out] [calls ipset]
+} -result {64 1 {}}
+
+test ip-1.4 {a missing file empties the sets} -setup {
+    app_reset
+} -body {
+    lassign [run_script ipset-ip.tcl office [file join $::work nope]] code out
+    list $code [lsearch -all -inline -glob [calls ipset] {flush *}]
+} -result {0 {{flush office-host} {flush office-net} {flush office-net6}}}
+
+# --- ipset-private.tcl --------------------------------------------------------
+
+test private-1.1 {deprecated script still loads the private list} -setup {
+    app_reset
+} -body {
+    lassign [run_script ipset-private.tcl] code out
+    list $code [string match "# Deprecated*" $out] [expr {"10.0.0.0/8" in [adds private-net]}]
+} -result {0 1 1}
+
+# --- dns.tcl and ipset-fqdn.tcl -----------------------------------------------
+
+proc fake_dig {} {
+    fake_logged dig {case "$2 $3" in
+"a app.example") printf '%s\n' 192.0.2.10 192.0.2.11 ;;
+"aaaa app.example") printf '%s\n' 2001:db8::10 ;;
+"a cname.example") printf '%s\n' app.example. 192.0.2.10 ;;
+esac}
+}
+
+test dns-1.1 {unique sorts and de-duplicates} -body {
+    unique {b a b c}
+} -result "a\nb\nc"
+
+test dns-1.2 {host2ip asks for A and AAAA per host} -setup {
+    bin_reset
+    fake_dig
+} -body {
+    host2ip {app.example}
+    calls dig
+} -result {{-t a app.example +short} {-t aaaa app.example +short}}
+
+test dns-1.3 {host2ip_loop with one try collects unique addresses} -setup {
+    bin_reset
+    fake_dig
+    set ::debug 0
+    set ::trace 0
+} -body {
+    lines [host2ip_loop {app.example cname.example} 1]
+} -result {192.0.2.10 192.0.2.11 2001:db8::10 app.example.}
+
+test fqdn-1.1 {resolves a host list and loads the addresses} -setup {
+    app_reset
+    fake_dig
+    write_file [file join $::work hosts] "# hosts\napp.example\ncname.example\n"
+} -body {
+    lassign [run_script ipset-fqdn.tcl app [file join $::work hosts]] code out
+    list $code [adds app-host] [adds app-net6]
+} -result {0 {192.0.2.10 192.0.2.11} 2001:db8::10}
+
+test fqdn-1.2 {a dig failure exits 1 before touching ipset} -setup {
+    app_reset
+    fake dig {echo "connection timed out"; exit 9}
+    write_file [file join $::work hosts] "app.example\n"
+} -body {
+    lassign [run_script ipset-fqdn.tcl app [file join $::work hosts]] code out
+    list $code [string match "*## Error 9 ##*" $out] [calls ipset]
+} -result {1 1 {}}
+
+test fqdn-1.3 {wrong argument count prints usage and exits 64} -setup {
+    app_reset
+} -body {
+    lindex [run_script ipset-fqdn.tcl] 0
+} -result 64
+
+finish
