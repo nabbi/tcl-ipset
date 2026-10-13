@@ -135,26 +135,69 @@ proc import {filename} {
 #   aggregateCIDR.pl   https://github.com/nabbi/route-summarization
 # does nothing if neither is found
 # keep -q: exec treats any stderr output as an error
+#
+# the globalvar exclusion list is passed to aggregate-cidr as --exclude, which
+# removes those addresses exactly, splitting any entry that contains them.
+# without aggregate-cidr it falls back to dropping entries that equal an
+# exclusion string, which misses an excluded address inside a larger entry
 proc cidr_summarize {r} {
     global debug
+    global exclude
 
-    foreach tool {aggregate-cidr aggregateCIDR.pl} {
-        set cmd [auto_execok $tool]
-        if { [llength $cmd] } {
-            if {$debug} { puts "# summarizing using $tool ($cmd)" }
+    set cmd [auto_execok aggregate-cidr]
+    if { [llength $cmd] } {
+        if {$debug} { puts "# summarizing using aggregate-cidr ($cmd)" }
+        if { ! [info exists exclude] || [llength $exclude] == 0 } {
             return [exec {*}$cmd -q << $r]
+        }
+
+        set fh [file tempfile xfile]
+        try {
+            puts $fh [join $exclude "\n"]
+            close $fh
+            # an invalid exclusion is an error, aborting before any set changes
+            return [exec {*}$cmd -q --exclude $xfile << $r]
+        } finally {
+            catch {close $fh}
+            file delete $xfile
         }
     }
 
-    # do nothing but pass it back
-    return $r
+    set cmd [auto_execok aggregateCIDR.pl]
+    if { [llength $cmd] } {
+        if {$debug} { puts "# summarizing using aggregateCIDR.pl ($cmd)" }
+        set r [exec {*}$cmd -q << $r]
+    }
+
+    # do nothing else but pass it back
+    return [exclude_exact $r]
+}
+
+# legacy exclusion without aggregate-cidr: drop lines equal to an exclusion
+proc exclude_exact {r} {
+    global debug
+    global exclude
+
+    if { ! [info exists exclude] || [llength $exclude] == 0 } {
+        return $r
+    }
+    puts "# aggregate-cidr not found; exclusions only match identical entries"
+
+    set kept {}
+    foreach l [split $r "\n"] {
+        if { [lsearch -exact $exclude $l] >= 0 } {
+            if {$debug} { puts "# excluding $l" }
+            continue
+        }
+        lappend kept $l
+    }
+    return [join $kept "\n"]
 }
 
 # Sorts the fetched url results into hosts and network lists
 proc process_results {results} {
     global debug
     global trace
-    global exclude
 
     #initialize empty lists to store our validated results
     set haship {}
@@ -177,14 +220,6 @@ proc process_results {results} {
         #    if {$debug} { puts "# invalid ip address $r" }
         #    continue
         #}
-
-        # skip entry if on globalvar exclusion list
-        if { [info exists exclude] } {
-            if { [lsearch $exclude $r] >= 0 } {
-                if {$debug} { puts "# excluding $r" }
-                continue
-            }
-        }
 
         if { [ip::is 4 $r] } {
             # see if we have a netmask included
