@@ -6,7 +6,34 @@ TCL scripts for managing ipset (iptables address sets)
 * IPv4 and IPv6 support
 * FQDN hostname lookups to IP addresses
 * source from url or local files
-* Exclusion of false positives
+* Exclusion of false positives (see [Exclusions](#exclusions))
+
+## Summarizing and exclusions
+
+Fetched entries are summarized into the fewest prefixes by the first tool
+found on `PATH`:
+
+1. `aggregate-cidr` from [route-summarization-rs](https://github.com/nabbi/route-summarization-rs)
+2. `aggregateCIDR.pl` from [route-summarization](https://github.com/nabbi/route-summarization) (Perl)
+
+With neither, entries are loaded as listed. Run with `debug` set to see which
+tool was used.
+
+### Exclusions
+
+A script's `exclude` list (see `ipset-denylists.tcl`) keeps addresses out of
+the sets. Entries can be hosts or prefixes, IPv4 or IPv6.
+
+With `aggregate-cidr`, the list is passed as `--exclude`: the excluded
+addresses are removed exactly, and any entry containing one is split around
+it. Excluding `140.82.112.3` from `140.82.112.0/24` leaves the other 255
+addresses blocked. An invalid exclusion stops the run before any set is
+changed.
+
+Without `aggregate-cidr`, only entries identical to an exclusion are dropped,
+so an excluded address inside a larger entry (`140.82.112.0/24`, or a `/31`
+produced by summarizing) is still blocked. The script prints a warning when
+it falls back to this.
 
 ## FireHol Deny lists
 

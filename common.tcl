@@ -133,7 +133,7 @@ proc import {filename} {
 # summarize with the first tool found in the system path:
 #   aggregate-cidr     https://github.com/nabbi/route-summarization-rs
 #   aggregateCIDR.pl   https://github.com/nabbi/route-summarization
-# does nothing if neither is found
+# entries pass through unsummarized if neither is found
 # keep -q: exec treats any stderr output as an error
 #
 # the globalvar exclusion list is passed to aggregate-cidr as --exclude, which
